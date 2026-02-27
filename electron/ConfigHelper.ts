@@ -8,12 +8,13 @@ import { OpenAI } from "openai"
 // API URL constants for Chinese AI providers
 const API_URLS = {
   deepseek: 'https://api.deepseek.com',
-  zhipu: 'https://open.bigmodel.cn/api/paas/v4'
+  zhipu: 'https://open.bigmodel.cn/api/paas/v4',
+  bailian: 'https://coding.dashscope.aliyuncs.com/v1'  // Coding Plan 专属 URL
 } as const;
 
 interface Config {
   apiKey: string;  // Legacy: used for OpenAI/Gemini/Anthropic
-  apiProvider: "openai" | "gemini" | "anthropic" | "deepseek" | "zhipu";
+  apiProvider: "openai" | "gemini" | "anthropic" | "deepseek" | "zhipu" | "bailian";
   extractionModel: string;
   solutionModel: string;
   debuggingModel: string;
@@ -25,6 +26,7 @@ interface Config {
   anthropicApiKey?: string;
   deepseekApiKey?: string;
   zhipuApiKey?: string;
+  bailianApiKey?: string;
 }
 
 export class ConfigHelper extends EventEmitter {
@@ -70,7 +72,7 @@ export class ConfigHelper extends EventEmitter {
   /**
    * Validate and sanitize model selection to ensure only allowed models are used
    */
-  private sanitizeModelSelection(model: string, provider: "openai" | "gemini" | "anthropic" | "deepseek" | "zhipu"): string {
+  private sanitizeModelSelection(model: string, provider: "openai" | "gemini" | "anthropic" | "deepseek" | "zhipu" | "bailian"): string {
     if (provider === "openai") {
       // Only allow gpt-4o and gpt-4o-mini for OpenAI
       const allowedModels = ['gpt-4o', 'gpt-4o-mini'];
@@ -116,6 +118,24 @@ export class ConfigHelper extends EventEmitter {
         return 'glm-4v-flash';
       }
       return model;
+    } else if (provider === "bailian") {
+      // Alibaba Bailian Coding Plan models
+      const allowedModels = [
+        // Coding Plan Pro 推荐模型 (支持图片理解)
+        'qwen3.5-plus', 'kimi-k2.5',
+        // Coding Plan Pro 其他模型
+        'glm-5', 'MiniMax-M2.5', 'glm-4.7',
+        'qwen3-max-2026-01-23', 'qwen3-coder-next', 'qwen3-coder-plus',
+        // 兼容旧版本的普通百炼模型 (以防用户切换)
+        'qwen-vl-max', 'qwen-vl-plus', 'qwen3-vl-plus', 'qwen3-vl-flash',
+        'qwen-plus', 'qwen-max', 'qwen-turbo', 'qwen3-max',
+        'qwq-plus'
+      ];
+      if (!allowedModels.includes(model)) {
+        console.warn(`Invalid Bailian model specified: ${model}. Using default model: qwen3.5-plus`);
+        return 'qwen3.5-plus';
+      }
+      return model;
     }
     // Default fallback
     return model;
@@ -128,7 +148,7 @@ export class ConfigHelper extends EventEmitter {
         const config = JSON.parse(configData);
         
         // Ensure apiProvider is a valid value
-        const validProviders = ["openai", "gemini", "anthropic", "deepseek", "zhipu"];
+        const validProviders = ["openai", "gemini", "anthropic", "deepseek", "zhipu", "bailian"];
         if (!validProviders.includes(config.apiProvider)) {
           config.apiProvider = "gemini"; // Default to Gemini if invalid
         }
@@ -220,6 +240,10 @@ export class ConfigHelper extends EventEmitter {
           updates.extractionModel = "glm-4v-flash";
           updates.solutionModel = "glm-4v-flash";
           updates.debuggingModel = "glm-4v-flash";
+        } else if (updates.apiProvider === "bailian") {
+          updates.extractionModel = "qwen-vl-plus";
+          updates.solutionModel = "qwen-plus";
+          updates.debuggingModel = "qwen-vl-plus";
         } else {
           updates.extractionModel = "gemini-2.0-flash";
           updates.solutionModel = "gemini-2.0-flash";
@@ -251,6 +275,8 @@ export class ConfigHelper extends EventEmitter {
           updates.deepseekApiKey = updates.apiKey;
         } else if (targetProvider === "zhipu") {
           updates.zhipuApiKey = updates.apiKey;
+        } else if (targetProvider === "bailian") {
+          updates.bailianApiKey = updates.apiKey;
         }
       }
 
@@ -290,6 +316,8 @@ export class ConfigHelper extends EventEmitter {
       return config.deepseekApiKey;
     } else if (targetProvider === "zhipu" && config.zhipuApiKey) {
       return config.zhipuApiKey;
+    } else if (targetProvider === "bailian" && config.bailianApiKey) {
+      return config.bailianApiKey;
     }
 
     // Fallback to legacy apiKey field
@@ -307,7 +335,7 @@ export class ConfigHelper extends EventEmitter {
   /**
    * Validate the API key format
    */
-  public isValidApiKeyFormat(apiKey: string, provider?: "openai" | "gemini" | "anthropic" | "deepseek" | "zhipu"): boolean {
+  public isValidApiKeyFormat(apiKey: string, provider?: "openai" | "gemini" | "anthropic" | "deepseek" | "zhipu" | "bailian"): boolean {
     // If provider is not specified, attempt to auto-detect
     if (!provider) {
       if (apiKey.trim().startsWith('sk-')) {
@@ -335,6 +363,9 @@ export class ConfigHelper extends EventEmitter {
       return apiKey.trim().length >= 10;
     } else if (provider === "zhipu") {
       // Zhipu/GLM API keys - format varies, just check length
+      return apiKey.trim().length >= 10;
+    } else if (provider === "bailian") {
+      // Alibaba Bailian API keys - format varies, just check length
       return apiKey.trim().length >= 10;
     }
 
@@ -376,7 +407,7 @@ export class ConfigHelper extends EventEmitter {
   /**
    * Test API key with the selected provider
    */
-  public async testApiKey(apiKey: string, provider?: "openai" | "gemini" | "anthropic" | "deepseek" | "zhipu"): Promise<{valid: boolean, error?: string}> {
+  public async testApiKey(apiKey: string, provider?: "openai" | "gemini" | "anthropic" | "deepseek" | "zhipu" | "bailian"): Promise<{valid: boolean, error?: string}> {
     // Auto-detect provider based on key format if not specified
     if (!provider) {
       if (apiKey.trim().startsWith('sk-')) {
@@ -403,6 +434,8 @@ export class ConfigHelper extends EventEmitter {
       return this.testDeepseekKey(apiKey);
     } else if (provider === "zhipu") {
       return this.testZhipuKey(apiKey);
+    } else if (provider === "bailian") {
+      return this.testBailianKey(apiKey);
     }
 
     return { valid: false, error: "Unknown API provider" };
@@ -545,6 +578,39 @@ export class ConfigHelper extends EventEmitter {
         errorMessage = 'Rate limit exceeded. Your Zhipu API key has reached its request limit.';
       } else if (error.status === 500) {
         errorMessage = 'Zhipu server error. Please try again later.';
+      } else if (error.message) {
+        errorMessage = `Error: ${error.message}`;
+      }
+
+      return { valid: false, error: errorMessage };
+    }
+  }
+
+  /**
+   * Test Alibaba Bailian API key
+   * Bailian uses OpenAI-compatible API
+   */
+  private async testBailianKey(apiKey: string): Promise<{valid: boolean, error?: string}> {
+    try {
+      // Bailian uses OpenAI-compatible API with different base URL
+      const openai = new OpenAI({
+        apiKey,
+        baseURL: API_URLS.bailian
+      });
+      // Make a simple API call to test the key
+      await openai.models.list();
+      return { valid: true };
+    } catch (error: any) {
+      console.error('Bailian API key test failed:', error);
+
+      let errorMessage = 'Unknown error validating Bailian API key';
+
+      if (error.status === 401) {
+        errorMessage = 'Invalid API key. Please check your Bailian/DashScope key and try again.';
+      } else if (error.status === 429) {
+        errorMessage = 'Rate limit exceeded. Your Bailian API key has reached its request limit.';
+      } else if (error.status === 500) {
+        errorMessage = 'Bailian server error. Please try again later.';
       } else if (error.message) {
         errorMessage = `Error: ${error.message}`;
       }
