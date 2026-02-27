@@ -13,7 +13,8 @@ import { jsonrepair } from 'jsonrepair';
 // API URL constants for Chinese AI providers
 const API_URLS = {
   deepseek: 'https://api.deepseek.com',
-  zhipu: 'https://open.bigmodel.cn/api/paas/v4'
+  zhipu: 'https://open.bigmodel.cn/api/paas/v4',
+  bailian: 'https://coding.dashscope.aliyuncs.com/v1'  // Coding Plan 专属 URL
 } as const;
 
 // Interface for Gemini API requests
@@ -142,6 +143,19 @@ export class ProcessingHelper {
           console.log("Zhipu/GLM client initialized successfully (OpenAI-compatible)");
         } else {
           console.warn("No API key available, Zhipu client not initialized");
+        }
+      } else if (config.apiProvider === "bailian") {
+        // Alibaba Bailian uses OpenAI-compatible API
+        if (apiKey) {
+          this.openaiClient = new OpenAI({
+            apiKey: apiKey,
+            baseURL: API_URLS.bailian,
+            timeout: 120000, // 2 minute timeout for Bailian
+            maxRetries: 2
+          });
+          console.log("Bailian client initialized successfully (OpenAI-compatible)");
+        } else {
+          console.warn("No API key available, Bailian client not initialized");
         }
       }
     } catch (error) {
@@ -621,15 +635,16 @@ export class ProcessingHelper {
 
       let problemInfo;
 
-      // OpenAI, Deepseek, and Zhipu all use OpenAI-compatible API
-      if (config.apiProvider === "openai" || config.apiProvider === "deepseek" || config.apiProvider === "zhipu") {
+      // OpenAI, Deepseek, Zhipu, and Bailian all use OpenAI-compatible API
+      if (config.apiProvider === "openai" || config.apiProvider === "deepseek" || config.apiProvider === "zhipu" || config.apiProvider === "bailian") {
         // Verify OpenAI-compatible client
         if (!this.openaiClient) {
           this.initializeAIClient(); // Try to reinitialize
 
           if (!this.openaiClient) {
             const providerName = config.apiProvider === "deepseek" ? "Deepseek" :
-                                 config.apiProvider === "zhipu" ? "Zhipu/GLM" : "OpenAI";
+                                 config.apiProvider === "zhipu" ? "Zhipu/GLM" :
+                                 config.apiProvider === "bailian" ? "Bailian" : "OpenAI";
             return {
               success: false,
               error: `${providerName} API key not configured or invalid. Please check your settings.`
@@ -644,6 +659,9 @@ export class ProcessingHelper {
         } else if (config.apiProvider === "zhipu") {
           // GLM-4V models support vision
           extractionModel = extractionModel || "glm-4v-flash";
+        } else if (config.apiProvider === "bailian") {
+          // Coding Plan 支持图片理解的模型
+          extractionModel = extractionModel || "qwen3.5-plus";
         } else {
           extractionModel = extractionModel || "gpt-4o";
         }
@@ -655,29 +673,38 @@ export class ProcessingHelper {
 
         if (config.apiProvider === "zhipu") {
           // Zhipu GLM-4V: Use native HTTP request to bypass OpenAI SDK quirks
-          const systemPrompt = "You are a coding challenge interpreter. Analyze the screenshot of the coding problem and extract all relevant information. Return the information in JSON format with these fields: problem_statement, constraints, example_input, example_output. Just return the structured JSON without any other text.";
+          const systemPrompt = "You are a coding challenge interpreter. Analyze the screenshots of the coding problem and extract all relevant information. Return the information in JSON format with these fields: problem_statement, constraints, example_input, example_output. Just return the structured JSON without any other text.";
 
-          // For Zhipu, use only the first image if multiple
-          const firstImage = imageDataList[0];
-          const imageUrl = firstImage.startsWith('data:') ? firstImage : `data:image/png;base64,${firstImage}`;
+          // Build content array with text first, then ALL images
+          const contentArray: any[] = [
+            {
+              type: "text",
+              text: `${systemPrompt}\n\nExtract the coding problem details from these screenshots. Return in JSON format. Preferred coding language we gonna use for this problem is ${language}.`
+            }
+          ];
+
+          // Add all screenshots to the request
+          for (const imageData of imageDataList) {
+            const imageUrl = imageData.startsWith('data:') ? imageData : `data:image/png;base64,${imageData}`;
+            contentArray.push({
+              type: "image_url",
+              image_url: { url: imageUrl }
+            });
+          }
+
+          console.log(`Solve mode: sending ${imageDataList.length} screenshots to Zhipu API for problem extraction`);
 
           const zhipuMessages = [
             {
               role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: `${systemPrompt}\n\nExtract the coding problem details from this screenshot. Return in JSON format. Preferred coding language we gonna use for this problem is ${language}.`
-                },
-                {
-                  type: "image_url",
-                  image_url: { url: imageUrl }
-                }
-              ]
+              content: contentArray
             }
           ];
 
-          extractionResponse = await this.callZhipuAPI(zhipuMessages, extractionModel, 60000);
+          // Increase timeout for multiple images (60s per image, minimum 120s)
+          const extractionTimeout = Math.max(120000, imageDataList.length * 60000);
+          console.log(`Problem extraction timeout: ${extractionTimeout / 1000}s for ${imageDataList.length} images`);
+          extractionResponse = await this.callZhipuAPI(zhipuMessages, extractionModel, extractionTimeout);
         } else {
           // OpenAI and Deepseek: standard format via OpenAI SDK
           messages = [
@@ -969,24 +996,35 @@ ${problemInfo.example_output || "未提供输出示例。"}
 
 【编程语言】${language}
 
-请严格按以下格式回答：
-1. **代码**：提供一个简洁、高效的 ${language} 实现（代码注释用中文）
-2. **解题思路**：用中文列出你的关键思路和推理过程，例如：
-   - **回溯法**：我们使用回溯法探索所有可能的组合...
-   - **剪枝优化**：当某个条件不满足时提前终止...
-3. **时间复杂度**：O(X)，用中文详细解释原因（至少2句话）
-4. **空间复杂度**：O(X)，用中文详细解释原因（至少2句话）
+请严格按以下 JSON 格式回答（不要添加任何其他内容）：
 
-**注意**：解题思路、复杂度分析等所有说明文字必须是中文！代码中的注释也要用中文！
+\`\`\`json
+{
+  "code": "你的 ${language} 代码（代码注释用中文）",
+  "thoughts": [
+    "**核心算法**：描述你使用的主要算法或数据结构...",
+    "**优化策略**：描述任何优化或剪枝策略..."
+  ],
+  "time_complexity": "O(X) - 用中文详细解释原因，说明循环次数、操作复杂度等（至少2句话）",
+  "space_complexity": "O(X) - 用中文详细解释原因，说明使用了哪些额外空间（至少2句话）"
+}
+\`\`\`
+
+**重要**：
+1. 必须返回有效的 JSON 格式
+2. code 字段中的换行符用 \\n 表示
+3. 解题思路、复杂度分析必须是中文
+4. 复杂度分析必须基于你生成的代码，不要使用模板答案
 `;
 
       let responseContent;
 
-      // OpenAI, Deepseek, and Zhipu all use OpenAI-compatible API
-      if (config.apiProvider === "openai" || config.apiProvider === "deepseek" || config.apiProvider === "zhipu") {
+      // OpenAI, Deepseek, Zhipu, and Bailian all use OpenAI-compatible API
+      if (config.apiProvider === "openai" || config.apiProvider === "deepseek" || config.apiProvider === "zhipu" || config.apiProvider === "bailian") {
         if (!this.openaiClient) {
           const providerName = config.apiProvider === "deepseek" ? "Deepseek" :
-                               config.apiProvider === "zhipu" ? "Zhipu/GLM" : "OpenAI";
+                               config.apiProvider === "zhipu" ? "Zhipu/GLM" :
+                               config.apiProvider === "bailian" ? "Bailian" : "OpenAI";
           return {
             success: false,
             error: `${providerName} API key not configured. Please check your settings.`
@@ -1001,6 +1039,8 @@ ${problemInfo.example_output || "未提供输出示例。"}
           solutionModel = solutionModel || "deepseek-chat";
         } else if (config.apiProvider === "zhipu") {
           solutionModel = solutionModel || "glm-4-flash";
+        } else if (config.apiProvider === "bailian") {
+          solutionModel = solutionModel || "qwen3.5-plus";
         } else {
           solutionModel = solutionModel || "gpt-4o";
         }
@@ -1016,7 +1056,7 @@ ${problemInfo.example_output || "未提供输出示例。"}
           const zhipuResponse = await this.callZhipuAPI(zhipuMessages, solutionModel, 120000);
           responseContent = zhipuResponse.choices[0].message.content;
         } else {
-          // OpenAI/Deepseek: Use OpenAI SDK
+          // OpenAI/Deepseek/Bailian: Use OpenAI SDK
           const solutionMessages = [
             { role: "system" as const, content: "你是一位资深的编程面试助手。请提供清晰、最优的解决方案，并附带详细的解释。" },
             { role: "user" as const, content: promptText }
@@ -1135,80 +1175,48 @@ ${problemInfo.example_output || "未提供输出示例。"}
         }
       }
       
-      // Extract parts from the response
-      const codeMatch = responseContent.match(/```(?:\w+)?\s*([\s\S]*?)```/);
-      const code = codeMatch ? codeMatch[1].trim() : responseContent;
-      
-      // Extract thoughts, looking for bullet points or numbered lists (supports both English and Chinese)
-      const thoughtsRegex = /(?:Thoughts:|Key Insights:|Reasoning:|Approach:|解题思路|思路|关键思路)[：:]?\s*([\s\S]*?)(?:Time complexity:|时间复杂度|$)/i;
-      const thoughtsMatch = responseContent.match(thoughtsRegex);
-      let thoughts: string[] = [];
+      // Parse JSON response from AI
+      let parsedResponse: {
+        code: string;
+        thoughts: string[];
+        time_complexity: string;
+        space_complexity: string;
+      };
 
-      if (thoughtsMatch && thoughtsMatch[1]) {
-        // Extract bullet points - be careful not to match markdown bold (**text**)
-        // Only match single dash/asterisk at line start, not double asterisks
-        const bulletPoints = thoughtsMatch[1].match(/(?:^|\n)\s*(?:[-•]|\d+\.)\s+(.+)/g);
-        if (bulletPoints) {
-          thoughts = bulletPoints.map(point =>
-            point.replace(/^\s*(?:[-•]|\d+\.)\s+/, '').trim()
-          ).filter(Boolean);
-        } else {
-          // If no bullet points found, split by newlines and filter empty lines
-          // Keep markdown formatting intact
-          thoughts = thoughtsMatch[1].split('\n')
-            .map((line) => line.trim())
-            .filter(line => {
-              // Filter out empty lines, code blocks, and orphaned markdown markers
-              if (!line || line.startsWith('```')) return false;
-              // Filter out lines that are only asterisks or markdown markers
-              if (/^[\*\-_]+$/.test(line)) return false;
-              return true;
-            });
+      try {
+        // Extract JSON from response (may be wrapped in ```json ... ```)
+        let jsonText = responseContent;
+        const jsonMatch = responseContent.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (jsonMatch) {
+          jsonText = jsonMatch[1].trim();
         }
-      }
-      
-      // Extract complexity information (supports both English and Chinese)
-      const timeComplexityPattern = /(?:Time complexity|时间复杂度)[：:]?\s*([^\n]+(?:\n[^\n]+)*?)(?=\n\s*(?:Space complexity|空间复杂度|$))/i;
-      const spaceComplexityPattern = /(?:Space complexity|空间复杂度)[：:]?\s*([^\n]+(?:\n[^\n]+)*?)(?=\n\s*(?:[A-Z#]|$))/i;
-      
-      let timeComplexity = "O(n) - 线性时间复杂度，因为我们只遍历数组一次。每个元素只处理一次，哈希表查找是 O(1) 操作。";
-      let spaceComplexity = "O(n) - 线性空间复杂度，因为我们在哈希表中存储元素。最坏情况下需要存储所有元素。";
-      
-      const timeMatch = responseContent.match(timeComplexityPattern);
-      if (timeMatch && timeMatch[1]) {
-        timeComplexity = timeMatch[1].trim();
-        if (!timeComplexity.match(/O\([^)]+\)/i)) {
-          timeComplexity = `O(n) - ${timeComplexity}`;
-        } else if (!timeComplexity.includes('-') && !timeComplexity.includes('because')) {
-          const notationMatch = timeComplexity.match(/O\([^)]+\)/i);
-          if (notationMatch) {
-            const notation = notationMatch[0];
-            const rest = timeComplexity.replace(notation, '').trim();
-            timeComplexity = `${notation} - ${rest}`;
-          }
-        }
-      }
-      
-      const spaceMatch = responseContent.match(spaceComplexityPattern);
-      if (spaceMatch && spaceMatch[1]) {
-        spaceComplexity = spaceMatch[1].trim();
-        if (!spaceComplexity.match(/O\([^)]+\)/i)) {
-          spaceComplexity = `O(n) - ${spaceComplexity}`;
-        } else if (!spaceComplexity.includes('-') && !spaceComplexity.includes('because')) {
-          const notationMatch = spaceComplexity.match(/O\([^)]+\)/i);
-          if (notationMatch) {
-            const notation = notationMatch[0];
-            const rest = spaceComplexity.replace(notation, '').trim();
-            spaceComplexity = `${notation} - ${rest}`;
-          }
-        }
+
+        // Fix common JSON issues using jsonrepair
+        const fixedJson = this.fixChineseQuotesInJson(jsonText);
+        parsedResponse = JSON.parse(fixedJson);
+      } catch (parseError) {
+        // Fallback: try to extract using regex if JSON parsing fails
+        console.warn("JSON parsing failed, attempting regex fallback:", parseError);
+
+        const codeMatch = responseContent.match(/```(?:\w+)?\s*([\s\S]*?)```/);
+        const code = codeMatch ? codeMatch[1].trim() : responseContent;
+
+        parsedResponse = {
+          code: code,
+          thoughts: ["AI 返回格式异常，无法解析解题思路"],
+          time_complexity: "无法解析 - AI 返回格式不符合预期，请重新生成",
+          space_complexity: "无法解析 - AI 返回格式不符合预期，请重新生成"
+        };
       }
 
+      // Validate and format the response
       const formattedResponse = {
-        code: code,
-        thoughts: thoughts.length > 0 ? thoughts : ["基于效率和可读性的解题方法"],
-        time_complexity: timeComplexity,
-        space_complexity: spaceComplexity
+        code: parsedResponse.code || "",
+        thoughts: Array.isArray(parsedResponse.thoughts) && parsedResponse.thoughts.length > 0
+          ? parsedResponse.thoughts
+          : ["基于效率和可读性的解题方法"],
+        time_complexity: parsedResponse.time_complexity || "未提供时间复杂度分析",
+        space_complexity: parsedResponse.space_complexity || "未提供空间复杂度分析"
       };
 
       return { success: true, data: formattedResponse };
@@ -1264,11 +1272,12 @@ ${problemInfo.example_output || "未提供输出示例。"}
       
       let debugContent;
 
-      // OpenAI, Deepseek, and Zhipu all use OpenAI-compatible API
-      if (config.apiProvider === "openai" || config.apiProvider === "deepseek" || config.apiProvider === "zhipu") {
+      // OpenAI, Deepseek, Zhipu, and Bailian all use OpenAI-compatible API
+      if (config.apiProvider === "openai" || config.apiProvider === "deepseek" || config.apiProvider === "zhipu" || config.apiProvider === "bailian") {
         if (!this.openaiClient) {
           const providerName = config.apiProvider === "deepseek" ? "Deepseek" :
-                               config.apiProvider === "zhipu" ? "Zhipu/GLM" : "OpenAI";
+                               config.apiProvider === "zhipu" ? "Zhipu/GLM" :
+                               config.apiProvider === "bailian" ? "Bailian" : "OpenAI";
           return {
             success: false,
             error: `${providerName} API key not configured. Please check your settings.`
@@ -1276,41 +1285,51 @@ ${problemInfo.example_output || "未提供输出示例。"}
         }
 
         // Get the appropriate model for the provider
+        // IMPORTANT: Debugging requires vision models since we're processing screenshots
         let debuggingModel = config.debuggingModel;
         if (config.apiProvider === "deepseek") {
           debuggingModel = debuggingModel || "deepseek-chat";
         } else if (config.apiProvider === "zhipu") {
-          // GLM-4V models support vision
-          debuggingModel = debuggingModel || "glm-4v-flash";
+          // GLM-4V models support vision - MUST use vision model for debugging
+          // Force vision model even if user configured a non-vision model
+          const isVisionModel = debuggingModel && (debuggingModel.includes("4v") || debuggingModel.includes("4V"));
+          debuggingModel = isVisionModel ? debuggingModel : "glm-4v-flash";
+        } else if (config.apiProvider === "bailian") {
+          // Coding Plan 支持图片理解的模型
+          debuggingModel = debuggingModel || "qwen3.5-plus";
         } else {
           debuggingModel = debuggingModel || "gpt-4o";
         }
 
-        const systemPrompt = `You are a coding interview assistant helping debug and improve solutions. Analyze these screenshots which include either error messages, incorrect outputs, or test cases, and provide detailed debugging help.
+        const systemPrompt = `你是一个编程面试助手，帮助调试和改进解决方案。分析截图中的错误信息、错误输出或测试用例，提供详细的调试帮助。
 
-Your response MUST follow this exact structure with these section headers (use ### for headers):
-### Issues Identified
-- List each issue as a bullet point with clear explanation
+你的回复必须严格按照以下 JSON 格式（不要添加任何其他内容）：
 
-### Specific Improvements and Corrections
-- List specific code changes needed as bullet points
+{
+  "fixed_code": "完整的修复后代码，纯代码文本，不要包含 markdown 代码块标记",
+  "issues": [
+    "问题1：具体描述发现的第一个问题",
+    "问题2：具体描述发现的第二个问题"
+  ],
+  "changes": [
+    "修改1：描述你做的第一个修改",
+    "修改2：描述你做的第二个修改"
+  ],
+  "explanation": "用中文详细解释为什么需要这些修改，以及修改后代码如何解决原来的问题"
+}
 
-### Optimizations
-- List any performance optimizations if applicable
+重要要求：
+1. fixed_code 必须是完整的、可直接提交运行的代码，不要用 \`\`\` 包裹
+2. 代码注释用中文
+3. 所有分析内容用中文
+4. 只返回 JSON，不要有其他任何内容`;
 
-### Explanation of Changes Needed
-Here provide a clear explanation of why the changes are needed
+        const userPrompt = `我正在解决这道编程题：「${problemInfo.problem_statement}」，使用 ${language} 语言。
 
-### Key Points
-- Summary bullet points of the most important takeaways
-
-If you include code examples, use proper markdown code blocks with language specification (e.g. \`\`\`java).`;
-
-        const userPrompt = `I'm solving this coding problem: "${problemInfo.problem_statement}" in ${language}. I need help with debugging or improving my solution. Here are screenshots of my code, the errors or test cases. Please provide a detailed analysis with:
-1. What issues you found in my code
-2. Specific improvements and corrections
-3. Any optimizations that would make the solution better
-4. A clear explanation of the changes needed`;
+截图中包含我的代码和错误信息/测试结果。请：
+1. 分析我的代码存在的问题
+2. 提供完整的修复后代码（不是代码片段，是完整可运行的代码）
+3. 解释你做了哪些修改以及为什么`;
 
         if (mainWindow) {
           mainWindow.webContents.send("processing-status", {
@@ -1321,26 +1340,36 @@ If you include code examples, use proper markdown code blocks with language spec
 
         if (config.apiProvider === "zhipu") {
           // Zhipu: Use native HTTP request for vision
-          const firstImage = imageDataList[0];
-          const imageUrl = firstImage.startsWith('data:') ? firstImage : `data:image/png;base64,${firstImage}`;
+          // Build content array with text first, then ALL images
+          const contentArray: any[] = [
+            {
+              type: "text",
+              text: `${systemPrompt}\n\n${userPrompt}`
+            }
+          ];
+
+          // Add all screenshots to the request
+          for (const imageData of imageDataList) {
+            const imageUrl = imageData.startsWith('data:') ? imageData : `data:image/png;base64,${imageData}`;
+            contentArray.push({
+              type: "image_url",
+              image_url: { url: imageUrl }
+            });
+          }
+
+          console.log(`Debug mode: sending ${imageDataList.length} screenshots to Zhipu API`);
 
           const zhipuMessages = [
             {
               role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: `${systemPrompt}\n\n${userPrompt}`
-                },
-                {
-                  type: "image_url",
-                  image_url: { url: imageUrl }
-                }
-              ]
+              content: contentArray
             }
           ];
 
-          const zhipuResponse = await this.callZhipuAPI(zhipuMessages, debuggingModel, 120000);
+          // Increase timeout for multiple images (60s per image, minimum 120s)
+          const debugTimeout = Math.max(120000, imageDataList.length * 60000);
+          console.log(`Debug mode timeout: ${debugTimeout / 1000}s for ${imageDataList.length} images`);
+          const zhipuResponse = await this.callZhipuAPI(zhipuMessages, debuggingModel, debugTimeout);
           debugContent = zhipuResponse.choices[0].message.content;
         } else {
           // OpenAI/Deepseek: Use OpenAI SDK
@@ -1553,33 +1582,93 @@ If you include code examples, use proper markdown code blocks with language spec
         });
       }
 
-      let extractedCode = "// Debug mode - see analysis below";
-      const codeMatch = debugContent.match(/```(?:[a-zA-Z]+)?([\s\S]*?)```/);
-      if (codeMatch && codeMatch[1]) {
-        extractedCode = codeMatch[1].trim();
-      }
-
+      // Try to parse JSON response from debug mode
+      let extractedCode = "// 调试模式 - 见下方分析";
+      let thoughts: string[] = ["基于截图的调试分析"];
       let formattedDebugContent = debugContent;
-      
-      if (!debugContent.includes('# ') && !debugContent.includes('## ')) {
-        formattedDebugContent = debugContent
-          .replace(/issues identified|problems found|bugs found/i, '## Issues Identified')
-          .replace(/code improvements|improvements|suggested changes/i, '## Code Improvements')
-          .replace(/optimizations|performance improvements/i, '## Optimizations')
-          .replace(/explanation|detailed analysis/i, '## Explanation');
+
+      // Helper function to extract code from markdown code block
+      const extractCodeFromMarkdown = (text: string): string => {
+        const codeMatch = text.match(/```(?:[a-zA-Z]+)?\s*([\s\S]*?)```/);
+        if (codeMatch && codeMatch[1]) {
+          return codeMatch[1].trim();
+        }
+        // Try with double backticks (AI sometimes returns ``go instead of ```go)
+        const codeMatch2 = text.match(/``(?:[a-zA-Z]+)?\s*([\s\S]*?)``/);
+        if (codeMatch2 && codeMatch2[1]) {
+          return codeMatch2[1].trim();
+        }
+        return text;
+      };
+
+      try {
+        // First, try to find JSON object pattern directly (handles nested code blocks better)
+        let debugData: any = null;
+
+        // Try to extract JSON using a more robust pattern
+        const jsonObjectMatch = debugContent.match(/\{[\s\S]*"fixed_code"[\s\S]*"explanation"[\s\S]*\}/);
+        if (jsonObjectMatch) {
+          let jsonStr = jsonObjectMatch[0];
+
+          // Fix common JSON issues (Chinese quotes, etc.)
+          jsonStr = this.fixChineseQuotesInJson(jsonStr);
+
+          // Try to parse and repair JSON
+          const { jsonrepair } = require('jsonrepair');
+          const repairedJson = jsonrepair(jsonStr);
+          debugData = JSON.parse(repairedJson);
+        }
+
+        if (debugData) {
+          // Extract fixed code
+          if (debugData.fixed_code) {
+            // Remove markdown code block markers if present
+            extractedCode = extractCodeFromMarkdown(debugData.fixed_code);
+          }
+
+          // Build formatted analysis content
+          const sections: string[] = [];
+
+          if (debugData.issues && debugData.issues.length > 0) {
+            sections.push("## 发现的问题\n" + debugData.issues.map((issue: string) => `- ${issue}`).join("\n"));
+            thoughts = debugData.issues.slice(0, 3);
+          }
+
+          if (debugData.changes && debugData.changes.length > 0) {
+            sections.push("## 修改内容\n" + debugData.changes.map((change: string) => `- ${change}`).join("\n"));
+          }
+
+          if (debugData.explanation) {
+            sections.push("## 详细解释\n" + debugData.explanation);
+          }
+
+          if (sections.length > 0) {
+            formattedDebugContent = sections.join("\n\n");
+          }
+
+          console.log("Debug JSON parsed successfully");
+        } else {
+          throw new Error("No valid JSON object found");
+        }
+      } catch (parseError) {
+        console.warn("Failed to parse debug JSON, falling back to regex extraction:", parseError);
+
+        // Fallback: try to extract code from markdown code block
+        extractedCode = extractCodeFromMarkdown(debugContent);
+
+        // Fallback: extract bullet points as thoughts
+        const bulletPoints = debugContent.match(/(?:^|\n)[ ]*(?:[-*•]|\d+\.)[ ]+([^\n]+)/g);
+        if (bulletPoints) {
+          thoughts = bulletPoints.map(point => point.replace(/^[ ]*(?:[-*•]|\d+\.)[ ]+/, '').trim()).slice(0, 5);
+        }
       }
 
-      const bulletPoints = formattedDebugContent.match(/(?:^|\n)[ ]*(?:[-*•]|\d+\.)[ ]+([^\n]+)/g);
-      const thoughts = bulletPoints 
-        ? bulletPoints.map(point => point.replace(/^[ ]*(?:[-*•]|\d+\.)[ ]+/, '').trim()).slice(0, 5)
-        : ["Debug analysis based on your screenshots"];
-      
       const response = {
         code: extractedCode,
         debug_analysis: formattedDebugContent,
         thoughts: thoughts,
-        time_complexity: "N/A - Debug mode",
-        space_complexity: "N/A - Debug mode"
+        time_complexity: "N/A - 调试模式",
+        space_complexity: "N/A - 调试模式"
       };
 
       return { success: true, data: response };

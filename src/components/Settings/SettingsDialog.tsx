@@ -13,7 +13,7 @@ import { Button } from "../ui/button";
 import { Settings } from "lucide-react";
 import { useToast } from "../../contexts/toast";
 
-type APIProvider = "openai" | "gemini" | "anthropic" | "deepseek" | "zhipu";
+type APIProvider = "openai" | "gemini" | "anthropic" | "deepseek" | "zhipu" | "bailian";
 
 type AIModel = {
   id: string;
@@ -30,6 +30,7 @@ type ModelCategory = {
   anthropicModels: AIModel[];
   deepseekModels: AIModel[];
   zhipuModels: AIModel[];
+  bailianModels: AIModel[];
 };
 
 // Define available models for each category
@@ -106,6 +107,18 @@ const modelCategories: ModelCategory[] = [
         id: "glm-4v-plus",
         name: "GLM-4V Plus",
         description: "Enhanced vision model"
+      }
+    ],
+    bailianModels: [
+      {
+        id: "qwen3.5-plus",
+        name: "Qwen3.5 Plus",
+        description: "推荐模型，支持图片理解"
+      },
+      {
+        id: "kimi-k2.5",
+        name: "Kimi K2.5",
+        description: "Kimi 最新模型，支持图片理解"
       }
     ]
   },
@@ -192,6 +205,43 @@ const modelCategories: ModelCategory[] = [
         name: "GLM-5",
         description: "Latest GLM-5 series"
       }
+    ],
+    bailianModels: [
+      {
+        id: "qwen3.5-plus",
+        name: "Qwen3.5 Plus",
+        description: "推荐模型，支持图片理解"
+      },
+      {
+        id: "kimi-k2.5",
+        name: "Kimi K2.5",
+        description: "Kimi 最新模型，支持图片理解"
+      },
+      {
+        id: "glm-5",
+        name: "GLM-5",
+        description: "智谱 GLM-5"
+      },
+      {
+        id: "MiniMax-M2.5",
+        name: "MiniMax M2.5",
+        description: "MiniMax 最新模型"
+      },
+      {
+        id: "qwen3-coder-plus",
+        name: "Qwen3 Coder Plus",
+        description: "代码专用模型"
+      },
+      {
+        id: "qwen3-coder-next",
+        name: "Qwen3 Coder Next",
+        description: "下一代代码模型"
+      },
+      {
+        id: "glm-4.7",
+        name: "GLM-4.7",
+        description: "智谱 GLM-4.7"
+      }
     ]
   },
   {
@@ -267,6 +317,18 @@ const modelCategories: ModelCategory[] = [
         name: "GLM-4V Plus",
         description: "Enhanced vision model"
       }
+    ],
+    bailianModels: [
+      {
+        id: "qwen3.5-plus",
+        name: "Qwen3.5 Plus",
+        description: "推荐模型，支持图片理解"
+      },
+      {
+        id: "kimi-k2.5",
+        name: "Kimi K2.5",
+        description: "Kimi 最新模型，支持图片理解"
+      }
     ]
   }
 ];
@@ -309,6 +371,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
     anthropic?: string;
     deepseek?: string;
     zhipu?: string;
+    bailian?: string;
   }>({});
 
   // Helper to get API key for a specific provider
@@ -319,12 +382,14 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
     anthropicApiKey?: string;
     deepseekApiKey?: string;
     zhipuApiKey?: string;
+    bailianApiKey?: string;
   }): string => {
     if (provider === "openai" && config.openaiApiKey) return config.openaiApiKey;
     if (provider === "gemini" && config.geminiApiKey) return config.geminiApiKey;
     if (provider === "anthropic" && config.anthropicApiKey) return config.anthropicApiKey;
     if (provider === "deepseek" && config.deepseekApiKey) return config.deepseekApiKey;
     if (provider === "zhipu" && config.zhipuApiKey) return config.zhipuApiKey;
+    if (provider === "bailian" && config.bailianApiKey) return config.bailianApiKey;
     return config.apiKey || "";
   };
 
@@ -343,12 +408,19 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
         anthropicApiKey?: string;
         deepseekApiKey?: string;
         zhipuApiKey?: string;
+        bailianApiKey?: string;
       }
 
       window.electronAPI
         .getConfig()
         .then((config: Config) => {
           const provider = config.apiProvider || "openai";
+          console.log("DEBUG: Loading config", {
+            provider,
+            extractionModel: config.extractionModel,
+            solutionModel: config.solutionModel,
+            debuggingModel: config.debuggingModel
+          });
           // Store all provider keys
           setProviderApiKeys({
             openai: config.openaiApiKey || "",
@@ -356,6 +428,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
             anthropic: config.anthropicApiKey || "",
             deepseek: config.deepseekApiKey || "",
             zhipu: config.zhipuApiKey || "",
+            bailian: config.bailianApiKey || "",
           });
           // Set current provider's API key
           setApiKey(getApiKeyForProvider(provider, config));
@@ -409,6 +482,10 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
       setExtractionModel("glm-4v-flash");
       setSolutionModel("glm-4-flash");
       setDebuggingModel("glm-4v-flash");
+    } else if (provider === "bailian") {
+      setExtractionModel("qwen3.5-plus");
+      setSolutionModel("qwen3.5-plus");
+      setDebuggingModel("qwen3.5-plus");
     }
   };
 
@@ -586,6 +663,26 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                   </div>
                 </div>
               </div>
+              <div
+                className={`flex-1 p-2 rounded-lg cursor-pointer transition-colors ${
+                  apiProvider === "bailian"
+                    ? "bg-white/10 border border-white/20"
+                    : "bg-black/30 border border-white/5 hover:bg-white/5"
+                }`}
+                onClick={() => handleProviderChange("bailian")}
+              >
+                <div className="flex items-center gap-2">
+                  <div
+                    className={`w-3 h-3 rounded-full ${
+                      apiProvider === "bailian" ? "bg-white" : "bg-white/20"
+                    }`}
+                  />
+                  <div className="flex flex-col">
+                    <p className="font-medium text-white text-sm">百炼 Coding</p>
+                    <p className="text-xs text-white/60">Coding Plan</p>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
           
@@ -595,7 +692,8 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
              apiProvider === "gemini" ? "Gemini API Key" :
              apiProvider === "anthropic" ? "Anthropic API Key" :
              apiProvider === "deepseek" ? "DeepSeek API Key" :
-             "智谱 API Key"}
+             apiProvider === "zhipu" ? "智谱 API Key" :
+             "百炼 API Key"}
             </label>
             <Input
               id="apiKey"
@@ -607,7 +705,8 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                 apiProvider === "gemini" ? "Enter your Gemini API key" :
                 apiProvider === "anthropic" ? "sk-ant-..." :
                 apiProvider === "deepseek" ? "sk-..." :
-                "Enter your Zhipu API key"
+                apiProvider === "zhipu" ? "Enter your Zhipu API key" :
+                "sk-... (百炼 DashScope API Key)"
               }
               className="bg-black/50 border-white/10 text-white"
             />
@@ -622,7 +721,8 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                 apiProvider === "gemini" ? "Google" :
                 apiProvider === "anthropic" ? "Anthropic" :
                 apiProvider === "deepseek" ? "DeepSeek" :
-                "智谱 AI"
+                apiProvider === "zhipu" ? "智谱 AI" :
+                "阿里云百炼"
               }
             </p>
             <div className="mt-2 p-2 rounded-md bg-white/5 border border-white/10">
@@ -675,7 +775,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                   </p>
                   <p className="text-xs text-white/60">3. Create a new API key and paste it here</p>
                 </>
-              ) : (
+              ) : apiProvider === "zhipu" ? (
                 <>
                   <p className="text-xs text-white/60 mb-1">1. 在 <button
                     onClick={() => openExternalLink('https://open.bigmodel.cn/')}
@@ -686,6 +786,18 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                     className="text-blue-400 hover:underline cursor-pointer">API Keys</button> 页面
                   </p>
                   <p className="text-xs text-white/60">3. 创建新的 API Key 并粘贴到这里</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs text-white/60 mb-1">1. 购买 <button
+                    onClick={() => openExternalLink('https://bailian.console.aliyun.com/#/api-agent/coding-plan')}
+                    className="text-blue-400 hover:underline cursor-pointer">百炼 Coding Plan 套餐</button>
+                  </p>
+                  <p className="text-xs text-white/60 mb-1">2. 在 Coding Plan 页面获取 <button
+                    onClick={() => openExternalLink('https://bailian.console.aliyun.com/#/api-agent/coding-plan')}
+                    className="text-blue-400 hover:underline cursor-pointer">专属 API Key</button>（格式 sk-sp-xxx）
+                  </p>
+                  <p className="text-xs text-white/60">3. 粘贴到这里（注意：不是普通百炼 API Key）</p>
                 </>
               )}
             </div>
@@ -747,7 +859,8 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                 apiProvider === "gemini" ? category.geminiModels :
                 apiProvider === "anthropic" ? category.anthropicModels :
                 apiProvider === "deepseek" ? category.deepseekModels :
-                category.zhipuModels;
+                apiProvider === "zhipu" ? category.zhipuModels :
+                category.bailianModels;
               
               return (
                 <div key={category.key} className="mb-4">
@@ -759,22 +872,28 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                   <div className="space-y-2">
                     {models.map((m) => {
                       // Determine which state to use based on category key
-                      const currentValue = 
+                      const currentValue =
                         category.key === 'extractionModel' ? extractionModel :
                         category.key === 'solutionModel' ? solutionModel :
                         debuggingModel;
-                      
+
                       // Determine which setter function to use
-                      const setValue = 
+                      const setValue =
                         category.key === 'extractionModel' ? setExtractionModel :
                         category.key === 'solutionModel' ? setSolutionModel :
                         setDebuggingModel;
-                        
+
+                      const isSelected = currentValue === m.id;
+                      // Debug: log selection state
+                      if (m.id.includes('kimi')) {
+                        console.log(`DEBUG: ${category.key} - model ${m.id}, currentValue=${currentValue}, isSelected=${isSelected}`);
+                      }
+
                       return (
                         <div
                           key={m.id}
                           className={`p-2 rounded-lg cursor-pointer transition-colors ${
-                            currentValue === m.id
+                            isSelected
                               ? "bg-white/10 border border-white/20"
                               : "bg-black/30 border border-white/5 hover:bg-white/5"
                           }`}
@@ -783,7 +902,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                           <div className="flex items-center gap-2">
                             <div
                               className={`w-3 h-3 rounded-full ${
-                                currentValue === m.id ? "bg-white" : "bg-white/20"
+                                isSelected ? "bg-white" : "bg-white/20"
                               }`}
                             />
                             <div>
